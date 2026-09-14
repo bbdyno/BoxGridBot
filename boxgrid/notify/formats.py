@@ -44,48 +44,9 @@ def _fmt_pct(value: Any) -> str:
 
 
 def format_full(event: Event) -> str:
-    """텔레그램용 전체 포맷. 헤더 3줄 + 상세."""
-    data = event.data or {}
+    """텔레그램용. 제목 한 줄 + 본문. 본문이 사람이 읽는 문장을 이미 담고 있다."""
     title = event.title or event.kind.value
-
-    symbol = data.get("symbol")
-    price = data.get("price")
-    line2_parts = []
-    if symbol:
-        line2_parts.append(str(symbol))
-    if price is not None:
-        line2_parts.append(f"{_fmt_number(price)}원")
-    line2 = " · ".join(line2_parts) if line2_parts else "-"
-
-    strategy = data.get("strategy")
-    reason = data.get("reason") or event.body
-    line3_parts = []
-    if strategy:
-        line3_parts.append(str(strategy))
-    if reason:
-        line3_parts.append(str(reason))
-    line3 = " · ".join(line3_parts) if line3_parts else "-"
-
-    lines = [title, line2, line3]
-
-    detail_lines: list[str] = []
-    if event.body and event.body != reason:
-        detail_lines.append(event.body)
-    if "qty" in data and data["qty"] is not None:
-        detail_lines.append(f"수량: {_fmt_number(data['qty'])}")
-    if "pnl" in data and data["pnl"] is not None:
-        detail_lines.append(f"손익: {_fmt_signed_number(data['pnl'])}원")
-    if "pnl_pct" in data and data["pnl_pct"] is not None:
-        detail_lines.append(f"손익률: {_fmt_pct(data['pnl_pct'])}")
-    if "stop" in data and data["stop"] is not None:
-        detail_lines.append(f"손절가: {_fmt_number(data['stop'])}원")
-    if "take" in data and data["take"] is not None:
-        detail_lines.append(f"익절가: {_fmt_number(data['take'])}원")
-
-    text = "\n".join(lines)
-    if detail_lines:
-        text += "\n" + "\n".join(detail_lines)
-    return text
+    return f"{title}\n{event.body}" if event.body else title
 
 
 def format_short(event: Event) -> str:

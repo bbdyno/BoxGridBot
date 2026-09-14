@@ -21,6 +21,7 @@ from .events import Event, EventKind
 from .models import Fill, Order, Position, Trade
 from .notify_null import NullNotifier
 from .store import Store
+from ..notify import humanize as H
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class GridEngine:
         self.gs = G.GridState.from_dict(self.store.get_state(STATE_KEY))
         self.live_confirmed: bool = not cfg.is_live
         self._touched_levels: set[int] = set()
+        self._in_daily = False
+        self._daily_grid_placed = False
         self._restore_paper()
         bind = getattr(self.notifier, "bind_engine", None)
         if callable(bind):
@@ -99,6 +102,14 @@ class GridEngine:
             log.warning("알림 전송 실패: %s", exc)
 
     # ---------- 잔고 ----------
+    @property
+    def quote(self) -> str:
+        return split_symbol(self.symbol)[1]
+
+    @property
+    def base(self) -> str:
+        return split_symbol(self.symbol)[0]
+
     def _balances(self) -> dict[str, float]:
         try:
             return self.exchange.fetch_balance()
@@ -158,21 +169,30 @@ class GridEngine:
                     G.apply_transition(self.gs, d.to, now)
                     log.info("상태 전이 -> %s (%s)", d.to.value, d.reason)
                 elif isinstance(d, G.Notify):
-                    await self.emit(EventKind.DAILY_CHECK, d.title, d.body, d.severity)
+                    if d.severity == "warn":
+                        await self.emit(EventKind.DAILY_CHECK, f"⚠️ {d.title}", d.body, d.severity)
+                    else:
+                        log.info("%s: %s", d.title, d.body)
             except Exception as exc:  # noqa: BLE001
                 log.exception("결정 실행 실패: %s", d)
                 await self.emit(EventKind.ERROR, "결정 실행 실패", f"{type(d).__name__}: {exc}", "error")
         self._save()
 
-    def _levels_text(self, lv: Levels) -> str:
-        lines = []
-        for i, (p, w) in enumerate(zip(lv.prices, lv.weights_pct), start=1):
-            mark = "✅" if i in self.gs.filled_levels else ("📌" if i in self.gs.orders else "·")
-            lines.append(f"{mark} P{i} {p:,.0f} ({w:.0f}%)")
-        lines.append(f"SL {lv.sl:,.0f} (일봉 종가) / TP {lv.tp:,.0f} ({self.cfg.levels.tp1_pct:.0f}% 익절)")
+    def _levels_text(self, lv: Levels, price: float | None = None) -> str:
+        price = price or self.gs.last_price or lv.close
+        seed = self._planned_seed()
+        lines = [f"현재가 {H.won(price, self.quote)}", "매수 대기 가격(현재가 대비):"]
+        lines += H.level_lines(lv.to_dict(), price, self.gs.filled_levels, list(self.gs.orders), self.quote, self.gs.seed or seed)
+        lines += H.exit_lines(lv.to_dict(), price, self.quote, self.cfg.levels.tp1_pct)
         if lv.mode == "dynamic":
-            lines.append(f"박스 {lv.box_low:,.0f}~{lv.box_high:,.0f} / ATR {lv.atr:,.0f} / SMA {lv.sma:,.0f}")
+            lines.append(f"  근거: 최근 {self.cfg.levels.box_lookback}일 박스 {H.won(lv.box_low, self.quote)}~{H.won(lv.box_high, self.quote)}, 하루 변동폭(ATR) {H.won(lv.atr, self.quote)}")
         return "\n".join(lines)
+
+    def _planned_seed(self) -> float | None:
+        try:
+            return self._seed(self._balances()) or None
+        except Exception:  # noqa: BLE001
+            return None
 
     async def _place_grid(self, lv: Levels, reason: str, now: datetime, force: bool = False) -> None:
         """그리드 게시. op_mode 와 잠금 상태에 따라 알림만 내거나 실제 게시한다."""
@@ -181,14 +201,16 @@ class GridEngine:
             self.gs.pending_confirm = None
             G.apply_transition(self.gs, G.State.ARMED, now)
             self._touched_levels = set()
-            why = "signal 모드" if self.op_mode == "signal" else "실거래 잠금(live_lock)"
-            await self.emit(EventKind.GRID, f"[판단] 매수 그리드 신호 ({why}, 주문 없음)",
-                            f"{reason}\n{self._levels_text(lv)}", data={"levels": lv.to_dict()})
+            self._daily_grid_placed = True
+            self.gs.seed = self._planned_seed()
+            if not self._in_daily:
+                await self.emit(EventKind.GRID, "🧭 [판단] 지금이라면 매수 대기 주문을 깔 자리입니다 (주문은 내지 않음)",
+                                f"{reason}\n{self._levels_text(lv)}", data={"levels": lv.to_dict()})
             return
         if self.op_mode == "confirm" and not force:
             self.gs.pending_confirm = {"levels": lv.to_dict(), "requested_at": now.isoformat(), "reason": reason}
-            await self.emit(EventKind.ARM_CONFIRM, "그리드 게시 승인 요청",
-                            f"{reason}\n{self._levels_text(lv)}\n{self.cfg.confirm_timeout_min}분 내 미응답 시 보류합니다.",
+            await self.emit(EventKind.ARM_CONFIRM, "🙋 매수 대기 주문을 깔까요?",
+                            f"{reason}\n{self._levels_text(lv)}\n\n아래 버튼으로 답해 주세요. {self.cfg.confirm_timeout_min}분 안에 답이 없으면 이번엔 깔지 않습니다.",
                             severity="warn", data={"levels": lv.to_dict()})
             return
 
@@ -208,17 +230,19 @@ class GridEngine:
         try:
             plan = plan_orders(lv, seed, min_cost)
         except ValueError as exc:
-            await self.emit(EventKind.REFUSAL, "그리드 게시 거절", str(exc), "warn")
+            await self.emit(EventKind.REFUSAL, "⛔ 매수 대기 주문을 깔지 않았습니다", str(exc), "warn")
             return
         refusal = self.guard.check_arm(self._equity(price, balances), sum(p["cost"] for p in plan),
                                        min(p["cost"] for p in plan))
         if refusal is not None:
-            await self.emit(EventKind.REFUSAL, f"그리드 게시 거절 [{refusal.rule}]", refusal.detail, "warn")
+            await self.emit(EventKind.REFUSAL, f"⛔ 매수 대기 주문을 깔지 않았습니다 [{refusal.rule}]",
+                            f"이유: {refusal.detail}", "warn")
             return
 
         self.gs.levels = lv
         self.gs.pending_confirm = None
         G.apply_transition(self.gs, G.State.ARMED, now)
+        self.gs.seed = seed
         placed: list[str] = []
         immediate: list[tuple[int, Order]] = []
         for p in plan:
@@ -235,8 +259,10 @@ class GridEngine:
                 self.gs.orders[p["level"]] = order.id
             placed.append(f"P{p['level']} {p['price']:,.0f} x {p['qty']:.6f} ({p['cost']:,.0f})")
         self._save()
-        await self.emit(EventKind.GRID, "그리드 게시", f"{reason}\n시드 {seed:,.0f}\n" + "\n".join(placed),
-                        data={"levels": lv.to_dict(), "seed": seed})
+        self._daily_grid_placed = True
+        if not self._in_daily:
+            await self.emit(EventKind.GRID, "📌 매수 대기 주문을 깔았습니다" + ("" if self.cfg.is_live else " (모의)"),
+                            f"{reason}\n{self._levels_text(lv, price)}", data={"levels": lv.to_dict(), "seed": seed})
         for level, order in immediate:
             await self._on_fill(level, self._order_to_fill(order, level))
 
@@ -252,8 +278,8 @@ class GridEngine:
             if order.filled > 0:
                 await self._on_fill(level, self._order_to_fill(order, level), transition=False)
             self.gs.orders.pop(level, None)
-        if reason:
-            await self.emit(EventKind.GRID, "그리드 회수", reason)
+        if reason and not self._in_daily:
+            await self.emit(EventKind.GRID, "↩️ 매수 대기 주문을 거둬들였습니다", f"이유: {reason}")
 
     def _order_to_fill(self, order: Order, level: int) -> Fill:
         conv = getattr(self.exchange, "order_to_fill", None)
@@ -293,9 +319,21 @@ class GridEngine:
                 G.apply_transition(self.gs, d.to, self.clock.now())
         self._save()
         pos = self.gs.position
-        await self.emit(EventKind.ENTRY, f"P{level} 체결 {self.symbol}",
-                        f"체결가 {fill.price:,.0f} / 수량 {fill.qty:.6f} / 금액 {fill.cost:,.0f}\n"
-                        f"누적 {len(self.gs.filled_levels)}단, 평단 {pos.entry_price:,.0f}, 수량 {pos.qty:.6f}",
+        q = self.quote
+        lv = self.gs.levels
+        n_total = len(lv.prices) if lv else 0
+        remaining = [i for i in range(1, n_total + 1) if i not in self.gs.filled_levels]
+        lines = [
+            f"{H.won(fill.price, q)}에 {H.qty_text(fill.qty, self.base)}, {H.won(fill.cost, q)}어치 샀습니다.",
+            f"지금까지 {len(self.gs.filled_levels)}/{n_total}단 매수, 평균 단가 {H.won(pos.entry_price, q)}, 총 {H.won(pos.cost, q)}.",
+        ]
+        if remaining and lv:
+            nxt = remaining[0]
+            lines.append(f"다음: {nxt}단 {H.won(lv.prices[nxt - 1], q)} 까지 더 떨어지면 추가 매수 대기 중.")
+        if lv:
+            lines.append(f"손절선 {H.won(lv.sl, q)} (일봉 종가 기준) / 익절선 {H.won(lv.tp, q)}.")
+        await self.emit(EventKind.ENTRY, f"🛒 {level}단 매수 체결" + ("" if self.cfg.is_live else " (모의)"),
+                        "\n".join(lines),
                         data={"symbol": self.symbol, "price": fill.price, "qty": fill.qty, "level": level,
                               "stop": pos.stop, "take": pos.take})
 
@@ -321,8 +359,29 @@ class GridEngine:
         if not pos.is_open:
             self.gs.position = None
         self._save()
-        await self.emit(EventKind.EXIT, f"청산({exit_reason}) {self.symbol}",
-                        f"{reason}\n체결가 {fill.price:,.0f} / 수량 {fill.qty:.6f} / 손익 {pnl:,.0f} ({trade.pnl_pct:+.2f}%)",
+        q = self.quote
+        titles = {
+            "stop_daily": "🛑 손절했습니다", "stop_disaster": "🚨 급락 방어로 전부 팔았습니다",
+            "tp1": "💰 절반 익절했습니다", "trail": "💰 나머지도 익절했습니다",
+            "manual": "↩️ 요청대로 전부 팔았습니다", "kill": "🔴 킬 스위치로 전부 팔았습니다",
+        }
+        nexts = {
+            "stop_daily": f"다음: {self.cfg.reentry_cooldown_days}일 쉬고, 추세가 살아 있으면 다시 매수 대기 주문을 깝니다.",
+            "stop_disaster": f"다음: {self.cfg.reentry_cooldown_days}일 쉬고, 추세가 살아 있으면 다시 매수 대기 주문을 깝니다.",
+            "tp1": f"다음: 남은 절반은 고점 대비 {self.cfg.levels.trail_pct:.0f}% 빠지면 팝니다. 매수 대기 주문은 거뒀습니다.",
+            "trail": f"다음: {self.cfg.reentry_cooldown_days}일 쉬고 새 박스에서 다시 시작합니다.",
+        }
+        sign = "이익" if pnl >= 0 else "손실"
+        lines = [
+            f"이유: {reason}",
+            f"{H.won(fill.price, q)}에 {H.qty_text(fill.qty, self.base)} 팔았습니다. {sign} {H.won(abs(pnl), q)} ({trade.pnl_pct:+.1f}%).",
+        ]
+        if self.gs.position is not None and self.gs.position.is_open:
+            lines.append(f"남은 보유: {H.qty_text(self.gs.position.qty, self.base)} (평단 {H.won(self.gs.position.entry_price, q)}).")
+        if exit_reason in nexts:
+            lines.append(nexts[exit_reason])
+        await self.emit(EventKind.EXIT, titles.get(exit_reason, "청산") + ("" if self.cfg.is_live else " (모의)"),
+                        "\n".join(lines),
                         data={"symbol": self.symbol, "price": fill.price, "qty": fill.qty, "pnl": pnl,
                               "pnl_pct": trade.pnl_pct, "exit_reason": exit_reason})
         return trade
@@ -390,7 +449,8 @@ class GridEngine:
                 await self._on_fill(level, self._order_to_fill(order, level))
             elif order.status == "canceled":
                 self.gs.orders.pop(level, None)
-                await self.emit(EventKind.GRID, f"P{level} 주문이 외부에서 취소됨", f"주문 {oid}", "warn")
+                await self.emit(EventKind.GRID, f"⚠️ {level}단 매수 대기 주문이 거래소에서 취소됐습니다",
+                                f"봇이 취소한 게 아닙니다(주문 {oid}). 직접 취소한 게 아니면 거래소 앱을 확인하세요.", "warn")
 
     async def _check_confirm_timeout(self, now: datetime) -> None:
         pc = self.gs.pending_confirm
@@ -399,7 +459,8 @@ class GridEngine:
         requested = datetime.fromisoformat(pc["requested_at"])
         if now >= requested + timedelta(minutes=self.cfg.confirm_timeout_min):
             self.gs.pending_confirm = None
-            await self.emit(EventKind.GRID, "게시 승인 시간 초과", "응답이 없어 이번 게시는 보류합니다.", "warn")
+            await self.emit(EventKind.GRID, "⏱ 답이 없어 이번엔 매수 대기 주문을 깔지 않았습니다",
+                            "다음 일봉 판정 때 다시 물어봅니다. 지금 깔려면 /arm.", "warn")
 
     async def _signal_level_touch(self, price: float) -> None:
         """주문 없는 모드(signal/live_lock)에서 레벨 도달을 알린다."""
@@ -408,8 +469,10 @@ class GridEngine:
         for i, p in enumerate(self.gs.levels.prices, start=1):
             if price <= p and i not in self._touched_levels:
                 self._touched_levels.add(i)
-                await self.emit(EventKind.LEVEL_TOUCH, f"[판단] P{i} 도달",
-                                f"현재가 {price:,.0f} <= P{i} {p:,.0f}. 실거래라면 {self.gs.levels.weights_pct[i-1]:.0f}% 매수.",
+                w = self.gs.levels.weights_pct[i - 1]
+                await self.emit(EventKind.LEVEL_TOUCH, f"🧭 [판단] {i}단 매수 가격에 왔습니다 (주문은 내지 않음)",
+                                f"현재가 {H.won(price, self.quote)} 가 {i}단 {H.won(p, self.quote)} 아래로 내려왔습니다.\n"
+                                f"실제 매매였다면 시드의 {w:.0f}%를 여기서 샀을 자리입니다.",
                                 data={"symbol": self.symbol, "price": price, "level": i})
 
     async def daily_check(self, force: bool = False) -> None:
@@ -431,22 +494,80 @@ class GridEngine:
                 return
             stale = self.guard.check_stale(daily, "1d", now)
             if stale is not None:
-                await self.emit(EventKind.ERROR, "일봉 데이터 지연", stale.detail, "warn")
+                await self.emit(EventKind.ERROR, "일봉 데이터 지연", f"{stale.detail}\n오늘 판단은 건너뜁니다. 거래소 API 상태를 확인하세요.", "warn")
                 return
             await self._check_fills()
-            decisions = G.evaluate_daily(self.gs, daily, self.cfg, now)
-            await self.execute(decisions, now)
-            t = self.gs.trend
-            await self.emit(EventKind.DAILY_CHECK, f"일봉 판정 완료 ({now.astimezone(KST):%m-%d %H:%M})",
-                            f"상태 {self.gs.state.value} / 종가 {t.get('close', 0):,.0f} / SMA {t.get('sma', 0):,.0f} / "
-                            f"추세 {'상승' if t.get('ok') else '이탈'}",
-                            data={"state": self.gs.state.value, **t})
+            try:
+                self.gs.last_price = self._price()
+            except Exception:  # noqa: BLE001
+                pass
+            state_before = self.gs.state
+            self._in_daily = True
+            self._daily_grid_placed = False
+            try:
+                decisions = G.evaluate_daily(self.gs, daily, self.cfg, now)
+                await self.execute(decisions, now)
+            finally:
+                self._in_daily = False
+            await self.emit(EventKind.DAILY_CHECK, f"📊 오늘의 판단 ({now.astimezone(KST):%-m/%-d %H:%M} 일봉 마감 기준)",
+                            self._daily_summary(state_before, now),
+                            data={"state": self.gs.state.value, **self.gs.trend})
+
+    def _daily_summary(self, state_before: G.State, now: datetime) -> str:
+        """09:00 한 통으로 끝나는 사람용 요약."""
+        t = self.gs.trend
+        q = self.quote
+        price = self.gs.last_price or t.get("close") or 0.0
+        close, sma = float(t.get("close") or 0.0), float(t.get("sma") or 0.0)
+        lines: list[str] = []
+        if t.get("ok"):
+            lines.append(f"추세: 상승 ✅  어제 종가 {H.won(close, q)} > 200일 평균 {H.won(sma, q)} ({H.pct(close, sma)})")
+        else:
+            lines.append(f"추세: 하락 ❌  어제 종가 {H.won(close, q)} < 200일 평균 {H.won(sma, q)} ({H.pct(close, sma)})")
+        lines.append("")
+        st = self.gs.state
+        lv = self.gs.levels
+        pos = self.gs.position
+        mock = "" if self.cfg.is_live else " (모의)"
+        if st is G.State.IN_POSITION and pos is not None and lv is not None:
+            lines.append(f"보유 중{mock}: {len(self.gs.filled_levels)}/{len(lv.prices)}단 매수, 평균 단가 {H.won(pos.entry_price, q)}, 현재 {H.pct(price, pos.entry_price)}")
+            lines.append(f"결정: 계속 보유합니다. 어제 종가가 손절선 {H.won(lv.sl, q)} 위에서 마감했습니다.")
+            lines.append(f"익절선 {H.won(lv.tp, q)}까지 {H.pct(lv.tp, price)}, 손절선까지 {H.pct(lv.sl, price)}.")
+            if self.gs.tp1_done and self.gs.trail_high:
+                lines.append(f"절반은 이미 익절했고, 나머지는 고점 {H.won(self.gs.trail_high, q)} 대비 {self.cfg.levels.trail_pct:.0f}% 빠지면 팝니다.")
+            if self.gs.orders:
+                nxt = min(self.gs.orders)
+                lines.append(f"추가 매수 대기: {nxt}단 {H.won(lv.prices[nxt - 1], q)} ({H.pct(lv.prices[nxt - 1], price)})")
+        elif st is G.State.ARMED and lv is not None:
+            if self.trading_enabled:
+                head = "결정: 매수 대기 주문을 " + ("깔았습니다" if self._daily_grid_placed else "그대로 둡니다") + mock + "."
+            else:
+                head = "결정: 지금이 매수 대기 자리입니다. (판단만, 주문 없음)"
+            lines.append(head)
+            lines.append(f"현재가 {H.won(price, q)}. 아래 가격까지 내려오면 나눠서 삽니다.")
+            lines += H.level_lines(lv.to_dict(), price, self.gs.filled_levels, list(self.gs.orders), q, self.gs.seed)
+            lines += H.exit_lines(lv.to_dict(), price, q, self.cfg.levels.tp1_pct)
+            lines.append("")
+            lines.append("한 줄: 상승장이라 박스 아래쪽 눌림을 기다립니다. 급락이 없으면 오늘은 아무 일도 없습니다.")
+        elif st is G.State.EXITED:
+            lines.append("결정: 최근 청산 직후라 하루 쉽니다. 내일 추세가 살아 있으면 다시 매수 대기 주문을 깝니다.")
+        else:
+            if state_before is G.State.ARMED:
+                lines.append("결정: 추세가 꺾여 매수 대기 주문을 거뒀습니다. 200일 평균 위로 다시 올라올 때까지 사지 않습니다.")
+            elif t.get("ok"):
+                lines.append("결정: 조건은 맞지만 매수 대기 주문을 깔지 못했습니다. 바로 위 경고 메시지를 확인하세요.")
+            else:
+                lines.append("결정: 아무것도 하지 않습니다. 하락 추세에서는 사지 않습니다. 종가가 200일 평균 위로 올라오면 알려드립니다.")
+        return "\n".join(lines)
 
     async def daily_report(self) -> None:
         date = self.clock.now().astimezone(KST).strftime("%Y-%m-%d")
         pnl = self.store.get_daily_pnl(date)
-        await self.emit(EventKind.DAILY_REPORT, f"{date} 일일 리포트",
-                        f"실현 손익 {pnl:,.0f} / 상태 {self.gs.state.value} / 사이클 {self.cycles}", data={"pnl": pnl})
+        if pnl == 0:
+            log.info("%s 실현 손익 없음", date)
+            return
+        await self.emit(EventKind.DAILY_REPORT, f"🧾 {date} 실현 손익",
+                        f"{'이익' if pnl > 0 else '손실'} {H.won(abs(pnl), self.quote)}", data={"pnl": pnl})
 
     async def heartbeat(self) -> None:
         self.store.set_state("heartbeat", self.clock.now().isoformat())
@@ -481,24 +602,26 @@ class GridEngine:
             notes.append("ARMED 인데 열린 주문이 없어 IDLE 로 되돌립니다. 다음 일봉 판정에서 재게시합니다.")
             G.apply_transition(self.gs, G.State.IDLE, self.clock.now())
         self._save()
-        body = "\n".join(notes) if notes else "저장 상태와 거래소 상태가 일치합니다."
-        await self.emit(EventKind.INFO, f"재시작 대조: {self.gs.state.value}", body, "warn" if notes else "info")
+        if notes:
+            await self.emit(EventKind.INFO, "⚠️ 재시작 후 확인이 필요합니다", "\n".join(notes), "warn")
+        else:
+            log.info("재시작 대조: 저장 상태와 거래소 상태가 일치합니다 (%s)", self.gs.state.value)
 
     # ---------- 명령 ----------
     async def arm(self, force: bool = True) -> str:
         """지금 추세·레벨을 계산해 게시한다(confirm 모드도 force 면 바로)."""
         async with self._lock:
             if self.gs.state is G.State.ARMED and self.gs.orders:
-                return "이미 게시 중입니다. /levels 로 확인하세요."
+                return "이미 매수 대기 주문이 깔려 있습니다. /levels 로 확인하세요."
             if self.gs.state is G.State.IN_POSITION:
-                return "보유 중에는 재게시하지 않습니다."
+                return "보유 중에는 새로 깔지 않습니다."
             now = self.clock.now()
             daily = self._fetch_daily(now)
             t = trend_filter(daily, self.cfg.levels.sma_len)
             self.gs.trend = {"ok": t.ok, "close": t.close, "sma": t.sma, "candle_ts": t.candle_ts, "reason": t.reason}
             if not t.ok:
                 self._save()
-                return f"추세 필터 미통과: {t.reason} (종가 {t.close:,.0f}, SMA {t.sma:,.0f})"
+                return f"하락 추세라 깔지 않습니다. 어제 종가 {H.won(t.close, self.quote)} < 200일 평균 {H.won(t.sma, self.quote)}"
             try:
                 lv = compute_levels(daily, self.cfg.levels, now)
             except ValueError as exc:
@@ -507,7 +630,7 @@ class GridEngine:
                 G.apply_transition(self.gs, G.State.IDLE, now)
             await self._place_grid(lv, "수동 /arm", now, force=force)
             self._save()
-            return f"처리했습니다. 상태 {self.gs.state.value}"
+            return f"처리했습니다. 상태: {self.gs.state.value}"
 
     async def confirm_arm(self) -> str:
         async with self._lock:
@@ -516,7 +639,7 @@ class GridEngine:
                 return "승인 대기 중인 게시가 없습니다."
             lv = Levels.from_dict(pc["levels"])
             await self._place_grid(lv, pc.get("reason", "승인"), self.clock.now(), force=True)
-            return f"게시했습니다. 상태 {self.gs.state.value}"
+            return f"깔았습니다. 상태: {self.gs.state.value}"
 
     async def disarm(self) -> str:
         async with self._lock:
@@ -524,7 +647,7 @@ class GridEngine:
             if self.gs.state is G.State.ARMED:
                 G.apply_transition(self.gs, G.State.IDLE, self.clock.now())
             self._save()
-            return f"회수했습니다. 상태 {self.gs.state.value}"
+            return f"거뒀습니다. 상태: {self.gs.state.value}"
 
     def set_mode(self, mode: str) -> str:
         if mode not in ("signal", "confirm", "auto"):
@@ -571,7 +694,7 @@ class GridEngine:
     def status(self) -> dict:
         pos = self.gs.position
         return {
-            "mode": self.cfg.mode, "op_mode": self.op_mode, "live_lock": self.cfg.live_lock,
+            "mode": self.cfg.mode, "op_mode": self.op_mode, "live_lock": self.cfg.live_lock, "quote": self.quote,
             "trading_enabled": self.trading_enabled, "order_mode": self.order_mode_text, "state": self.gs.state.value,
             "cycles": self.cycles, "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
             "price": self.gs.last_price, "trend": dict(self.gs.trend), "guard": self.guard.state,
@@ -603,9 +726,11 @@ class GridEngine:
         starter = getattr(self.notifier, "start", None)
         if callable(starter):
             await starter()
-        await self.emit(EventKind.INFO, "엔진 시작",
-                        f"거래소 {self.cfg.exchange} ({self.cfg.mode}), 운용 {self.op_mode}, "
-                        f"{self.order_mode_text}, tick {self.cfg.tick_seconds}초")
+        state_names = {"IDLE": "관망", "ARMED": "매수 대기", "IN_POSITION": "보유 중", "EXITED": "청산 직후"}
+        await self.emit(EventKind.INFO, "🟢 봇을 켰습니다",
+                        f"{H.mode_line(self.cfg.is_live, self.trading_enabled)}\n"
+                        f"종목 {self.symbol} ({self.cfg.exchange}), 현재 상태: {state_names.get(self.gs.state.value, self.gs.state.value)}.\n"
+                        f"매일 {self.cfg.daily_close_hour_kst:02d}:00 일봉이 마감되면 그날의 판단을 한 통으로 보내드립니다. 궁금하면 /status.")
         await self.reconcile()
         await self.daily_check()
 
@@ -617,8 +742,8 @@ class GridEngine:
         sched.add_job(self.heartbeat, "interval", minutes=5)
         sched.start()
         if self.cfg.is_live and not self.cfg.live_lock and not self.live_confirmed:
-            await self.emit(EventKind.LIVE_CONFIRM, "라이브 매매 승인 요청",
-                            "실제 주문을 시작하려면 아래 버튼을 눌러 승인해 주세요.", "warn")
+            await self.emit(EventKind.LIVE_CONFIRM, "⚠️ 실제 주문을 시작할까요?",
+                            "이 버튼을 누르면 진짜 돈으로 주문이 나갑니다. 첫날은 시드의 10%까지만 씁니다.", "warn")
         try:
             if max_cycles:
                 while self.cycles < max_cycles and not self._stop.is_set():

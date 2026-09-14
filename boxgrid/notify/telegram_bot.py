@@ -8,6 +8,10 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from ..core.events import Event, EventKind
+from . import humanize as H
+
+STATE_NAMES = {"IDLE": "관망 (하락 추세, 안 삼)", "ARMED": "매수 대기 (주문 깔아 둠)",
+               "IN_POSITION": "보유 중", "EXITED": "청산 직후 (하루 쉼)"}
 
 log = logging.getLogger(__name__)
 
@@ -90,16 +94,24 @@ class TelegramChannel:
             return await self._reply(update, err)
         s = self.engine.status()
         t = s.get("trend") or {}
-        lines = [
-            f"상태: {s['state']}  (거래소 {s['mode']}, 운용 {s['op_mode']}, {s.get('order_mode', '')})",
-            f"현재가: {s['price']:,.0f}" if s.get("price") else "현재가: -",
-            f"추세: {'상승' if t.get('ok') else '이탈/미확인'} (종가 {t.get('close', 0):,.0f} / SMA {t.get('sma', 0):,.0f})",
-            f"체결 단: {s['filled_levels'] or '없음'} / 열린 주문: {len(s['orders'])}건",
-            f"가드: 일손익 {s['guard'].get('daily_pnl', 0):,.0f}, 주간 손절 {s['guard'].get('stops_this_week', 0)}회, 킬 {s['guard'].get('killed')}",
-            f"사이클: {s['cycles']}",
-        ]
+        q = s.get("quote", "KRW")
+        lines = [f"상태: {STATE_NAMES.get(s['state'], s['state'])}", f"{s.get('order_mode', '')}"]
+        if s.get("price"):
+            lines.append(f"현재가: {H.won(s['price'], q)}")
+        if t:
+            ok = t.get("ok")
+            lines.append(f"추세: {'상승 ✅' if ok else '하락 ❌'}  (어제 종가 {H.won(t.get('close'), q)} vs 200일 평균 {H.won(t.get('sma'), q)})")
+        pos = s.get("position")
+        if pos:
+            pnl = f" ({pos['pnl_pct']:+.1f}%)" if pos.get("pnl_pct") is not None else ""
+            lines.append(f"보유: {len(s['filled_levels'])}단, 평단 {H.won(pos['entry_price'], q)}{pnl}")
+        if s["orders"]:
+            lines.append(f"매수 대기 주문: {len(s['orders'])}건 (/levels 로 가격 확인)")
+        g = s.get("guard") or {}
+        if g.get("killed"):
+            lines.append("🔴 킬 스위치 켜짐: 새 주문 안 냄")
         if s.get("pending_confirm"):
-            lines.append("⚠️ 게시 승인 대기 중")
+            lines.append("🙋 매수 대기 주문 승인을 기다리는 중 (위 메시지의 버튼)")
         await self._reply(update, "\n".join(lines))
 
     async def _cmd_trend(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:
@@ -109,10 +121,16 @@ class TelegramChannel:
             return await self._reply(update, err)
         s = self.engine.status()
         t = s.get("trend") or {}
+        q = s.get("quote", "KRW")
         if not t:
-            return await self._reply(update, "아직 일봉 판정 전입니다.")
-        await self._reply(update, f"상태 머신: {s['state']}\n일봉 {t.get('candle_ts', '')[:10]} 종가 {t.get('close', 0):,.0f}\n"
-                                  f"SMA: {t.get('sma', 0):,.0f}\n판정: {t.get('reason', '')}")
+            return await self._reply(update, "아직 일봉 판정 전입니다. 09:00 이후 다시 보세요.")
+        ok = t.get("ok")
+        body = (f"{'상승 추세 ✅' if ok else '하락 추세 ❌'}\n"
+                f"어제({t.get('candle_ts', '')[:10]}) 종가 {H.won(t.get('close'), q)}\n"
+                f"200일 평균 {H.won(t.get('sma'), q)} ({H.pct(float(t.get('close') or 0), float(t.get('sma') or 1))})\n"
+                f"{'평균선 위라 매수 후보를 봅니다.' if ok else '평균선 아래라 사지 않습니다.'}\n"
+                f"봇 상태: {STATE_NAMES.get(s['state'], s['state'])}")
+        await self._reply(update, body)
 
     async def _cmd_levels(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:
         if not self._is_allowed(update):
@@ -127,12 +145,13 @@ class TelegramChannel:
         if (err := self._need_engine()):
             return await self._reply(update, err)
         s = self.engine.status()
+        q = s.get("quote", "KRW")
         pos = s.get("position")
         if not pos:
             return await self._reply(update, "보유 포지션 없음")
-        pnl = f"{pos['pnl_pct']:+.2f}%" if pos.get("pnl_pct") is not None else "-"
-        await self._reply(update, f"수량 {pos['qty']:.6f}\n평단 {pos['entry_price']:,.0f}\n평가 {pnl}\n"
-                                  f"SL {pos['stop']:,.0f} (일봉 종가) / TP {pos['take']:,.0f}")
+        pnl = f"{pos['pnl_pct']:+.1f}%" if pos.get("pnl_pct") is not None else "-"
+        await self._reply(update, f"보유 {pos['qty']:.4f}, 평균 단가 {H.won(pos['entry_price'], q)}\n평가 손익 {pnl}\n"
+                                  f"손절선 {H.won(pos['stop'], q)} (일봉 종가 기준) / 익절선 {H.won(pos['take'], q)}")
 
     async def _cmd_report(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:
         if not self._is_allowed(update):
@@ -142,9 +161,11 @@ class TelegramChannel:
         date = context.args[0] if context.args else None
         pnl = self.engine.store.get_daily_pnl(date)
         trades = self.engine.store.recent_trades(5)
-        lines = [f"일일 실현 손익: {pnl:,.0f}", f"최근 거래 {len(trades)}건"]
+        q = self.engine.status().get("quote", "KRW")
+        names = {"stop_daily": "손절", "stop_disaster": "급락 방어", "tp1": "절반 익절", "trail": "익절", "manual": "수동", "kill": "킬"}
+        lines = [f"오늘 실현 손익: {'+' if pnl >= 0 else '-'}{H.won(abs(pnl), q)}", f"최근 거래 {len(trades)}건"]
         for t in trades:
-            lines.append(f"- {t['exit_time'][:16]} {t['exit_reason']} {t['pnl']:,.0f} ({t['pnl_pct']:+.2f}%)")
+            lines.append(f"- {t['exit_time'][:10]} {names.get(t['exit_reason'], t['exit_reason'])} {'+' if t['pnl'] >= 0 else '-'}{H.won(abs(t['pnl']), q)} ({t['pnl_pct']:+.1f}%)")
         await self._reply(update, "\n".join(lines))
 
     # ---------- 제어 ----------
@@ -191,7 +212,7 @@ class TelegramChannel:
             return
         if self.engine is not None:
             self.engine.pause()
-        await self._reply(update, "signal 모드로 전환했습니다(주문 없음).")
+        await self._reply(update, "주문을 멈췄습니다. 판단과 알림만 계속합니다. 되돌리려면 /resume.")
 
     async def _cmd_resume(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:
         if not self._is_allowed(update):

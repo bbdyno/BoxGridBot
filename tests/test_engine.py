@@ -19,8 +19,9 @@ async def test_daily_check_arms_and_fills_flow():
     eng, src, ex, clock = build()
     lv = await _arm(eng, src, clock)
     assert len(ex.fetch_open_orders("BTC/KRW")) == 4
-    kinds = [e["kind"] for e in eng.store.recent_events()]
-    assert "GRID" in kinds and "DAILY_CHECK" in kinds
+    daily_ev = eng.store.recent_events(kind="DAILY_CHECK")[0]
+    assert "매수 대기 주문을 깔았습니다" in daily_ev["body"] and "1단" in daily_ev["body"]
+    assert eng.store.recent_events(kind="GRID") == []  # 09:00 판정은 한 통으로 합친다
     # 같은 일봉은 두 번 판정하지 않는다
     before = len(eng.store.recent_events())
     await eng.daily_check()
@@ -124,12 +125,12 @@ async def test_signal_mode_alerts_without_orders():
     await eng.daily_check()
     assert eng.gs.state is G.State.ARMED and eng.gs.orders == {}
     assert ex.fetch_open_orders("BTC/KRW") == []
-    grid_ev = eng.store.recent_events(kind="GRID")[0]
-    assert "[판단]" in grid_ev["title"]
+    daily_ev = eng.store.recent_events(kind="DAILY_CHECK")[0]
+    assert "판단만, 주문 없음" in daily_ev["body"]
     src.price = eng.gs.levels.prices[0] - 1
     await eng.tick()
     touch = eng.store.recent_events(kind="LEVEL_TOUCH")
-    assert len(touch) == 1 and "P1" in touch[0]["title"]
+    assert len(touch) == 1 and "1단" in touch[0]["title"]
     await eng.tick()
     assert len(eng.store.recent_events(kind="LEVEL_TOUCH")) == 1  # 중복 알림 없음
 
@@ -167,6 +168,7 @@ async def test_manual_commands():
     msg = await eng.arm()
     assert eng.gs.state is G.State.ARMED and "ARMED" in msg
     assert "이미" in await eng.arm()
+    assert "깔았습니다" in eng.store.recent_events(kind="GRID")[0]["title"]
     msg = await eng.disarm()
     assert eng.gs.state is G.State.IDLE and ex.fetch_open_orders("BTC/KRW") == []
     assert eng.set_mode("confirm").startswith("운용 모드")
@@ -186,7 +188,7 @@ async def test_manual_commands():
     assert eng.gs.state is G.State.EXITED and eng.gs.position is None
     st = eng.status()
     assert st["state"] == "EXITED" and st["trading_enabled"]
-    assert "SL" in eng.levels_text()
+    assert "손절" in eng.levels_text()
 
 
 async def test_guard_refuses_after_weekly_stops():
@@ -222,7 +224,7 @@ async def test_place_grid_never_above_current_price():
     assert eng.gs.state is G.State.ARMED and len(eng.gs.orders) == 4
     for o in ex.fetch_open_orders("BTC/KRW"):
         assert o.price < 99_500.0
-    assert "조정한 단: P1, P2" in eng.store.recent_events(kind="GRID")[0]["body"]
+    assert eng.gs.levels.prices[0] < 99_500.0
     # 즉시 체결되지 않았다
     await eng.tick()
     assert eng.gs.state is G.State.ARMED and eng.gs.filled_levels == []

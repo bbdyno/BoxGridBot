@@ -24,7 +24,7 @@ class FakeEngine:
         self.guard = SimpleNamespace(kill=lambda r: self.calls.append(("kill", r)))
 
     def status(self):
-        return {"state": "ARMED", "mode": "paper", "op_mode": "auto", "trading_enabled": True, "order_mode": "페이퍼 주문(모의)", "price": 100.0,
+        return {"state": "ARMED", "mode": "paper", "quote": "KRW", "op_mode": "auto", "trading_enabled": True, "order_mode": "페이퍼 주문(모의)", "price": 100.0,
                 "trend": {"ok": True, "close": 100.0, "sma": 90.0, "candle_ts": "2026-09-01", "reason": "위"},
                 "filled_levels": [], "orders": {1: "a"}, "guard": {}, "cycles": 3, "pending_confirm": False,
                 "position": {"qty": 1.0, "entry_price": 100.0, "stop": 90.0, "take": 120.0, "pnl_pct": 1.0}}
@@ -86,15 +86,15 @@ async def test_status_levels_balance(ch):
     c, _ = ch
     upd, msg = _update()
     await c._cmd_status(upd, _ctx())
-    assert "ARMED" in msg.sent[0][0] and "페이퍼 주문" in msg.sent[0][0]
+    assert "매수 대기" in msg.sent[0][0] and "페이퍼 주문" in msg.sent[0][0]
     await c._cmd_levels(upd, _ctx())
     assert msg.sent[1][0] == "P1 100"
     await c._cmd_balance(upd, _ctx())
-    assert "평단 100" in msg.sent[2][0]
+    assert "평균 단가 100원" in msg.sent[2][0]
     await c._cmd_trend(upd, _ctx())
-    assert "SMA" in msg.sent[3][0]
+    assert "200일 평균" in msg.sent[3][0]
     await c._cmd_report(upd, _ctx())
-    assert "1,234" in msg.sent[4][0]
+    assert "1,234원" in msg.sent[4][0]
 
 
 async def test_control_commands(ch):

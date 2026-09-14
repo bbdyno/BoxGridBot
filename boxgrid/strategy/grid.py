@@ -90,6 +90,7 @@ class GridState:
     trend: dict[str, Any] = field(default_factory=dict)
     last_price: float | None = None
     pending_confirm: dict[str, Any] | None = None
+    seed: float | None = None          # 게시 시점에 배정한 시드(알림 표시용)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +102,7 @@ class GridState:
             "tp1_done": self.tp1_done, "trail_high": self.trail_high,
             "armed_at": self.armed_at, "exited_at": self.exited_at, "last_daily_ts": self.last_daily_ts,
             "trend": dict(self.trend), "last_price": self.last_price, "pending_confirm": self.pending_confirm,
+            "seed": self.seed,
         }
 
     @classmethod
@@ -120,6 +122,7 @@ class GridState:
         gs.trend = dict(d.get("trend") or {})
         gs.last_price = d.get("last_price")
         gs.pending_confirm = d.get("pending_confirm")
+        gs.seed = d.get("seed")
         return gs
 
     @property
