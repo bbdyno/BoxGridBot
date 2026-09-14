@@ -91,7 +91,7 @@ class TelegramChannel:
         s = self.engine.status()
         t = s.get("trend") or {}
         lines = [
-            f"상태: {s['state']}  (거래소 {s['mode']}, 운용 {s['op_mode']}, 실거래 {'가능' if s['trading_enabled'] else '잠금'})",
+            f"상태: {s['state']}  (거래소 {s['mode']}, 운용 {s['op_mode']}, {s.get('order_mode', '')})",
             f"현재가: {s['price']:,.0f}" if s.get("price") else "현재가: -",
             f"추세: {'상승' if t.get('ok') else '이탈/미확인'} (종가 {t.get('close', 0):,.0f} / SMA {t.get('sma', 0):,.0f})",
             f"체결 단: {s['filled_levels'] or '없음'} / 열린 주문: {len(s['orders'])}건",

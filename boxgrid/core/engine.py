@@ -122,6 +122,13 @@ class GridEngine:
         return float(balances.get(quote, 0.0)) + reserved + max(held, pos_qty) * price
 
     @property
+    def order_mode_text(self) -> str:
+        """알림용 주문 상태 문구."""
+        if not self.trading_enabled:
+            return "주문 잠금(판단·알림만)"
+        return "페이퍼 주문(모의)" if not self.cfg.is_live else "실주문"
+
+    @property
     def trading_enabled(self) -> bool:
         """실제(또는 페이퍼) 주문을 낼 수 있는지."""
         if self.op_mode == "signal":
@@ -565,7 +572,7 @@ class GridEngine:
         pos = self.gs.position
         return {
             "mode": self.cfg.mode, "op_mode": self.op_mode, "live_lock": self.cfg.live_lock,
-            "trading_enabled": self.trading_enabled, "state": self.gs.state.value,
+            "trading_enabled": self.trading_enabled, "order_mode": self.order_mode_text, "state": self.gs.state.value,
             "cycles": self.cycles, "last_tick_at": self.last_tick_at.isoformat() if self.last_tick_at else None,
             "price": self.gs.last_price, "trend": dict(self.gs.trend), "guard": self.guard.state,
             "orders": dict(self.gs.orders), "filled_levels": list(self.gs.filled_levels),
@@ -598,7 +605,7 @@ class GridEngine:
             await starter()
         await self.emit(EventKind.INFO, "엔진 시작",
                         f"거래소 {self.cfg.exchange} ({self.cfg.mode}), 운용 {self.op_mode}, "
-                        f"실거래 {'가능' if self.trading_enabled else '잠금'}, tick {self.cfg.tick_seconds}초")
+                        f"{self.order_mode_text}, tick {self.cfg.tick_seconds}초")
         await self.reconcile()
         await self.daily_check()
 
