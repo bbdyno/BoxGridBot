@@ -1,0 +1,61 @@
+# BoxGridBot 설정 — 박스권 하단 그리드 롱(일봉 종가 손절)
+mode: paper            # paper | live
+live_lock: true        # true 면 live 로 켜도 실주문 없이 페이퍼로 강등(판단·알림만). 실거래 연결 시 false
+op_mode: auto          # signal(알림만) | confirm(게시 전 승인 버튼) | auto
+exchange: upbit        # upbit | binance
+symbol: BTC/KRW
+tick_seconds: 60
+initial_cash: 10000000 # paper 전용 시드
+fee: 0.0005
+slippage: 0.001
+seed_pct: 100          # 견적통화 잔고 중 이 전략에 쓰는 비율
+daily_close_hour_kst: 9     # 업비트·바이낸스 일봉 마감 = 09:00 KST(UTC 0시)
+daily_close_delay_sec: 30
+confirm_timeout_min: 30
+reentry_cooldown_days: 1
+rearm_daily_if_unfilled: true
+db_path: data/boxgrid.db
+log_path: logs/boxgrid.log
+
+levels:
+  mode: dynamic        # dynamic(박스·ATR) | fixed(/set 또는 아래 fixed 값)
+  box_lookback: 20
+  atr_len: 14
+  sma_len: 200
+  offsets_atr: [0.5, 0.0, -0.5, -1.0]   # P1..P4 = 박스 저점 + k*ATR
+  weights_pct: [20, 20, 20, 40]
+  sl_atr: 2.0          # SL = 박스 저점 - 2 ATR (일봉 종가 기준)
+  tp_atr: 0.25         # TP = 박스 고점 + 0.25 ATR
+  tp1_pct: 50
+  trail_pct: 3.0
+  disaster_pct: 3.0    # SL 보다 3% 더 빠지면 장중 즉시 청산
+  rearm_threshold_pct: 0.5
+  fixed: {}            # 예: {p1: 79000000, p2: 77500000, p3: 76500000, p4: 75700000, sl: 73600000, tp: 82500000}
+
+risk:
+  max_position_pct: 100
+  daily_loss_limit_pct: 8
+  max_stops_per_week: 2
+  min_order_cost: 5000
+  stale_minutes: 30
+  kill_file: data/KILL
+  live_first_day_cap_pct: 10
+
+notify:
+  telegram: {enabled: true}
+  kakao: {enabled: false, link_url: "https://t.me/"}
+  routing:
+    ENTRY: [telegram, kakao]
+    EXIT: [telegram, kakao]
+    GRID: [telegram]
+    DAILY_CHECK: [telegram, kakao]
+    LEVEL_TOUCH: [telegram]
+    ARM_CONFIRM: [telegram]
+    REFUSAL: [telegram]
+    ERROR: [telegram, kakao]
+    DAILY_REPORT: [telegram]
+    KILL: [telegram, kakao]
+    HEARTBEAT_LOST: [telegram]
+    LIVE_CONFIRM: [telegram]
+    KAKAO_TOKEN_EXPIRING: [telegram]
+    INFO: [telegram]

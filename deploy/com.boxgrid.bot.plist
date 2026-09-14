@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd. 설치:
+     cp deploy/com.boxgrid.bot.plist ~/Library/LaunchAgents/
+     launchctl load ~/Library/LaunchAgents/com.boxgrid.bot.plist
+     경로를 본인 경로로 바꾸세요. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.boxgrid.bot</string>
+  <key>WorkingDirectory</key><string>/Users/denny.k/Documents/BoxGridBot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/denny.k/Documents/BoxGridBot/.venv/bin/python</string>
+    <string>-m</string><string>boxgrid.main</string>
+    <string>--config</string><string>config/grid.yaml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/denny.k/Documents/BoxGridBot/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/denny.k/Documents/BoxGridBot/logs/launchd.err.log</string>
+</dict>
+</plist>

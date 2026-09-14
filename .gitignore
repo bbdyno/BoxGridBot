@@ -1,0 +1,15 @@
+.venv/
+_workspace/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*.db
+data/ohlcv/
+data/KILL
+data/kakao_token.json
+data/telegram_state.json
+.env
+dist/*.zip
+logs/
+.DS_Store
