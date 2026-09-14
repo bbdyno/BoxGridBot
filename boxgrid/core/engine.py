@@ -15,6 +15,7 @@ from ..config import AppConfig
 from ..exchange.base import Exchange, split_symbol
 from ..risk.guard import Guard
 from ..strategy import grid as G
+from ..strategy.dca import dca_verdict
 from ..strategy.levels import Levels, clamp_below_price, closed_daily, compute_levels, plan_orders, trend_filter
 from .clock import KST, Clock
 from .events import Event, EventKind
@@ -53,6 +54,7 @@ class GridEngine:
         self._touched_levels: set[int] = set()
         self._in_daily = False
         self._daily_grid_placed = False
+        self._last_daily: pd.DataFrame | None = None
         self._restore_paper()
         bind = getattr(self.notifier, "bind_engine", None)
         if callable(bind):
@@ -489,6 +491,7 @@ class GridEngine:
                 await self.emit(EventKind.ERROR, "일봉 판정 불가", "확정 일봉이 없습니다.", "error")
                 return
             last_ts = daily.index[-1].isoformat()
+            self._last_daily = daily
             if not force and self.gs.last_daily_ts == last_ts:
                 log.info("일봉 %s 은 이미 판정했습니다.", last_ts)
                 return
@@ -558,7 +561,31 @@ class GridEngine:
                 lines.append("결정: 조건은 맞지만 매수 대기 주문을 깔지 못했습니다. 바로 위 경고 메시지를 확인하세요.")
             else:
                 lines.append("결정: 아무것도 하지 않습니다. 하락 추세에서는 사지 않습니다. 종가가 200일 평균 위로 올라오면 알려드립니다.")
+        if self.cfg.dca.enabled and self._last_daily is not None:
+            lines.append("")
+            lines.append(self.dca_text(self._last_daily, price))
         return "\n".join(lines)
+
+    def dca_text(self, daily: pd.DataFrame, price: float) -> str:
+        """적립 추가 매수 지표 섹션."""
+        q = self.quote
+        v = dca_verdict(daily, price, self.cfg.dca)
+        head = v.headline(self.cfg.dca.base_amount, lambda x: H.won(x, q))
+        lines = [f"💰 적립 추가 매수 지표: {head}"]
+        lines += [f"  · {r}" for r in v.reasons]
+        lines.append("  (참고용 규칙 점수입니다. 최종 판단은 본인이 합니다)")
+        return "\n".join(lines)
+
+    def dca_now(self) -> str:
+        """/dca 명령: 지금 가격으로 계산."""
+        try:
+            now = self.clock.now()
+            daily = self._fetch_daily(now)
+            price = self._price()
+        except Exception as exc:  # noqa: BLE001
+            return f"계산 실패: {exc}"
+        self._last_daily = daily
+        return f"현재가 {H.won(price, self.quote)}\n" + self.dca_text(daily, price)
 
     async def daily_report(self) -> None:
         date = self.clock.now().astimezone(KST).strftime("%Y-%m-%d")

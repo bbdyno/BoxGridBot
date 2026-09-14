@@ -32,6 +32,9 @@ class FakeEngine:
     def levels_text(self):
         return "P1 100"
 
+    def dca_now(self):
+        return "현재가 100원\n💰 적립 추가 매수 지표: 50점"
+
     async def arm(self, force=True):
         self.calls.append(("arm", force)); return "armed"
 
@@ -95,6 +98,8 @@ async def test_status_levels_balance(ch):
     assert "200일 평균" in msg.sent[3][0]
     await c._cmd_report(upd, _ctx())
     assert "1,234원" in msg.sent[4][0]
+    await c._cmd_dca(upd, _ctx())
+    assert "적립 추가 매수 지표" in msg.sent[5][0]
 
 
 async def test_control_commands(ch):

@@ -37,9 +37,24 @@ cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS 채우기
 
 상시 가동(macOS): `deploy/com.boxgrid.bot.plist` 를 `~/Library/LaunchAgents/` 에 복사 후 `launchctl load`.
 
+## 적립 추가 매수 지표 (/dca)
+
+매일 정액 적립(예: 업비트 코인 모으기 2만원)에 얹어 "오늘 더 살 자리인가"를 09:00 판단 메시지에 함께 알려준다.
+규칙은 하나다. **현재가가 200일 평균보다 싸면 할인폭만큼 더 담고, 평균 위면 적립분만.** RSI 35 미만이면 0.5배 추가.
+
+| 200일 평균 대비 | 추가 배수 | 2만원 적립 기준 |
+|---|---|---|
+| 위 | 0 | 적립분만 |
+| 0~10% 싸다 | 0.5 | +1만원 |
+| 10~20% 싸다 | 1.0 | +2만원 |
+| 20% 이상 싸다 | 2.0 | +4만원 |
+
+업비트 BTC/KRW 일봉으로 검증(`scripts/dca_eval.py`): 그냥 적립 대비 평균 단가가 최근 2년 −5.1%, 4년 −8.1%, 전체(2021~) −11.5%.
+처음 시도한 "상승 추세에서 눌림 때만 추가" 방식은 세 구간 모두 평균 단가가 더 높아 폐기했다. 추가 투입은 여유 자금 범위에서.
+
 ## 텔레그램 명령
 
-`/status` `/trend` `/levels` `/balance` `/report` `/arm` `/disarm` `/mode signal|confirm|auto`
+`/status` `/trend` `/levels` `/balance` `/report` `/dca` `/arm` `/disarm` `/mode signal|confirm|auto`
 `/set p1 79000000 20` `/close` `/kill` `/help`
 
 ## 구조
@@ -48,6 +63,8 @@ cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS 채우기
 boxgrid/
   strategy/levels.py   레벨 계산(순수 함수)
   strategy/grid.py     상태 머신(순수 로직, Decision 목록 반환)
+  strategy/dca.py      적립 추가 매수 지표(200일 평균 할인폭)
+  notify/humanize.py   사람이 읽는 알림 문장·금액 표기
   core/engine.py       결정 실행·스케줄·영속화·재시작 대조
   exchange/            ccxt 어댑터(지정가·취소·조회), 페이퍼 거래소(주문장 시뮬)
   risk/guard.py        킬 스위치, 일손실·주간 손절 한도, 데이터 지연

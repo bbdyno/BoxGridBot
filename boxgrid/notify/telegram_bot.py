@@ -21,6 +21,7 @@ HELP = """명령
 /levels 그리드 레벨과 체결 현황
 /balance 포지션·손익
 /report [YYYY-MM-DD] 일일 손익
+/dca 적립 추가 매수 지표(지금 가격 기준)
 /arm 지금 추세·레벨 계산해 게시
 /disarm 게시 회수
 /mode signal|confirm|auto 운용 모드
@@ -62,7 +63,7 @@ class TelegramChannel:
         for name, fn in [
             ("start", self._cmd_help), ("help", self._cmd_help), ("status", self._cmd_status),
             ("trend", self._cmd_trend), ("levels", self._cmd_levels), ("balance", self._cmd_balance),
-            ("report", self._cmd_report), ("arm", self._cmd_arm), ("disarm", self._cmd_disarm),
+            ("report", self._cmd_report), ("dca", self._cmd_dca), ("arm", self._cmd_arm), ("disarm", self._cmd_disarm),
             ("mode", self._cmd_mode), ("set", self._cmd_set), ("close", self._cmd_close), ("kill", self._cmd_kill),
             ("pause", self._cmd_pause), ("resume", self._cmd_resume),
         ]:
@@ -167,6 +168,13 @@ class TelegramChannel:
         for t in trades:
             lines.append(f"- {t['exit_time'][:10]} {names.get(t['exit_reason'], t['exit_reason'])} {'+' if t['pnl'] >= 0 else '-'}{H.won(abs(t['pnl']), q)} ({t['pnl_pct']:+.1f}%)")
         await self._reply(update, "\n".join(lines))
+
+    async def _cmd_dca(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:
+        if not self._is_allowed(update):
+            return
+        if (err := self._need_engine()):
+            return await self._reply(update, err)
+        await self._reply(update, self.engine.dca_now())
 
     # ---------- 제어 ----------
     async def _cmd_arm(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:

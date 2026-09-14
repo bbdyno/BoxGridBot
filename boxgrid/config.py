@@ -41,6 +41,26 @@ class LevelConfig:
 
 
 @dataclass
+class DcaConfig:
+    """적립식 추가 매수 지표 설정. 핵심은 200일 평균 대비 할인폭."""
+
+    enabled: bool = True
+    base_amount: float = 20_000.0                 # 매일 자동 적립 금액
+    sma_len: int = 200
+    rsi_len: int = 14
+    high_lookback: int = 90                       # 참고 표시용 고점 구간
+    discount_tiers_pct: list[float] = field(default_factory=lambda: [0.0, 10.0, 20.0])  # 이만큼 이상 싸면
+    tier_multipliers: list[float] = field(default_factory=lambda: [0.5, 1.0, 2.0])       # 추가 배수
+    rsi_oversold: float = 35.0
+    rsi_bonus: float = 0.5
+    max_multiplier: float = 2.5
+
+    def __post_init__(self) -> None:
+        if len(self.discount_tiers_pct) != len(self.tier_multipliers):
+            raise ValueError("discount_tiers_pct 와 tier_multipliers 길이가 다릅니다.")
+
+
+@dataclass
 class AppConfig:
     """애플리케이션 전체 설정."""
 
@@ -60,6 +80,7 @@ class AppConfig:
     reentry_cooldown_days: int = 1
     rearm_daily_if_unfilled: bool = True
     levels: LevelConfig = field(default_factory=LevelConfig)
+    dca: DcaConfig = field(default_factory=DcaConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     notify: dict[str, Any] = field(default_factory=dict)
     db_path: str = "data/boxgrid.db"
@@ -81,8 +102,9 @@ def _pick(cls, raw: dict[str, Any]) -> dict[str, Any]:
 
 def from_dict(raw: dict[str, Any]) -> AppConfig:
     """dict 를 AppConfig 로 변환한다."""
-    cfg = AppConfig(**_pick(AppConfig, {k: v for k, v in raw.items() if k not in ("levels", "risk", "notify")}))
+    cfg = AppConfig(**_pick(AppConfig, {k: v for k, v in raw.items() if k not in ("levels", "dca", "risk", "notify")}))
     cfg.levels = LevelConfig(**_pick(LevelConfig, dict(raw.get("levels") or {})))
+    cfg.dca = DcaConfig(**_pick(DcaConfig, dict(raw.get("dca") or {})))
     cfg.risk = RiskConfig(**_pick(RiskConfig, dict(raw.get("risk") or {})))
     cfg.notify = dict(raw.get("notify") or {})
     if cfg.mode not in ("paper", "live"):

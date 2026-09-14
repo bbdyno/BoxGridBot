@@ -102,6 +102,7 @@ def base_cfg(**over) -> AppConfig:
         "risk": {"max_position_pct": 100, "daily_loss_limit_pct": 8, "max_stops_per_week": 2,
                  "min_order_cost": 5000, "stale_minutes": 30, "kill_file": ""},
         "notify": {},
+        "dca": {"enabled": True, "base_amount": 20000},
     }
     for k, v in over.items():
         if isinstance(v, dict) and isinstance(raw.get(k), dict):

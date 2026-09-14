@@ -32,6 +32,15 @@ levels:
   rearm_threshold_pct: 0.5
   fixed: {}            # 예: {p1: 79000000, p2: 77500000, p3: 76500000, p4: 75700000, sl: 73600000, tp: 82500000}
 
+dca:                   # 매일 자동 적립에 얹을 '추가 매수' 지표 (09:00 판단 메시지에 포함, /dca 로 수시 조회)
+  enabled: true
+  base_amount: 20000   # 매일 적립 금액(원)
+  discount_tiers_pct: [0, 10, 20]   # 200일 평균보다 이만큼 이상 싸면
+  tier_multipliers: [0.5, 1.0, 2.0] # 적립액의 몇 배를 추가할지
+  rsi_oversold: 35     # RSI 가 이 아래면 +rsi_bonus 배
+  rsi_bonus: 0.5
+  max_multiplier: 2.5
+
 risk:
   max_position_pct: 100
   daily_loss_limit_pct: 8
