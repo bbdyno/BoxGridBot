@@ -131,6 +131,10 @@ class TelegramChannel:
                 f"200일 평균 {H.won(t.get('sma'), q)} ({H.pct(float(t.get('close') or 0), float(t.get('sma') or 1))})\n"
                 f"{'평균선 위라 매수 후보를 봅니다.' if ok else '평균선 아래라 사지 않습니다.'}\n"
                 f"봇 상태: {STATE_NAMES.get(s['state'], s['state'])}")
+        r = t.get("regime")
+        if r:
+            body += ("\n장세: 발산 📈 (일봉 볼린저 밴드가 좁아졌다 벌어지는 중, 저점이 높아지는 구간)" if r.get("name") == "expansion"
+                     else f"\n장세: 박스(수렴) ({r.get('reason', '')})")
         await self._reply(update, body)
 
     async def _cmd_levels(self, update: Update, context: "ContextTypes.DEFAULT_TYPE") -> None:

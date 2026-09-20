@@ -140,6 +140,12 @@ def evaluate_daily(gs: GridState, daily: pd.DataFrame, cfg: AppConfig, now: date
     out: list[Decision] = []
     trend = trend_filter(daily, cfg.levels.sma_len)
     gs.trend = _trend_dict(trend)
+    try:
+        from .regime import detect_regime
+
+        gs.trend["regime"] = detect_regime(daily, cfg.levels).to_dict()
+    except Exception:  # noqa: BLE001 - 장세 표시는 부가 정보
+        pass
     gs.last_daily_ts = trend.candle_ts or (daily.index[-1].isoformat() if daily is not None and not daily.empty else None)
     close = trend.close
 
@@ -161,7 +167,7 @@ def evaluate_daily(gs: GridState, daily: pd.DataFrame, cfg: AppConfig, now: date
             out.append(CancelGrid("추세 필터 이탈"))
             out.append(Transition(State.IDLE, f"종가 {close:,.0f} < SMA {trend.sma:,.0f}"))
             return out
-        if cfg.rearm_daily_if_unfilled and not gs.filled_levels and gs.levels is not None and cfg.levels.mode == "dynamic":
+        if cfg.rearm_daily_if_unfilled and not gs.filled_levels and gs.levels is not None and cfg.levels.mode != "fixed":
             try:
                 fresh = compute_levels(daily, cfg.levels, now)
             except ValueError as exc:

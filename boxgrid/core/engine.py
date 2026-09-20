@@ -16,7 +16,8 @@ from ..exchange.base import Exchange, split_symbol
 from ..risk.guard import Guard
 from ..strategy import grid as G
 from ..strategy.dca import dca_verdict
-from ..strategy.levels import Levels, clamp_below_price, closed_daily, compute_levels, plan_orders, trend_filter
+from ..strategy.levels import (Levels, clamp_below_price, closed_daily, compute_levels, plan_orders,
+                               pullback_reference, trend_filter)
 from .clock import KST, Clock
 from .events import Event, EventKind
 from .models import Fill, Order, Position, Trade
@@ -186,7 +187,9 @@ class GridEngine:
         lines = [f"현재가 {H.won(price, self.quote)}", "매수 대기 가격(현재가 대비):"]
         lines += H.level_lines(lv.to_dict(), price, self.gs.filled_levels, list(self.gs.orders), self.quote, self.gs.seed or seed)
         lines += H.exit_lines(lv.to_dict(), price, self.quote, self.cfg.levels.tp1_pct)
-        if lv.mode == "dynamic":
+        if lv.regime == "pullback":
+            lines.append(f"  근거: 발산 장세라 최근 고점 {H.won(lv.anchor_high, self.quote)}에서 눌린 자리, 하루 변동폭(ATR) {H.won(lv.atr, self.quote)}")
+        elif lv.mode != "fixed":
             lines.append(f"  근거: 최근 {self.cfg.levels.box_lookback}일 박스 {H.won(lv.box_low, self.quote)}~{H.won(lv.box_high, self.quote)}, 하루 변동폭(ATR) {H.won(lv.atr, self.quote)}")
         return "\n".join(lines)
 
@@ -527,6 +530,7 @@ class GridEngine:
             lines.append(f"추세: 상승 ✅  어제 종가 {H.won(close, q)} > 200일 평균 {H.won(sma, q)} ({H.pct(close, sma)})")
         else:
             lines.append(f"추세: 하락 ❌  어제 종가 {H.won(close, q)} < 200일 평균 {H.won(sma, q)} ({H.pct(close, sma)})")
+        lines += self._regime_lines(now)
         lines.append("")
         st = self.gs.state
         lv = self.gs.levels
@@ -565,6 +569,23 @@ class GridEngine:
             lines.append("")
             lines.append(self.dca_text(self._last_daily, price))
         return "\n".join(lines)
+
+    def _regime_lines(self, now: datetime) -> list[str]:
+        """장세(수렴/발산) 한두 줄. 주문에는 영향 없고 사람의 판단을 돕는 정보다(adaptive 모드 제외)."""
+        r = (self.gs.trend or {}).get("regime")
+        if not r:
+            return []
+        q = self.quote
+        if r["name"] != "expansion":
+            return [f"장세: 박스(수렴)  {r['reason']}. 박스 아래쪽 눌림을 기다리는 구간입니다."]
+        out = [f"장세: 발산 📈  {H.kst_date(r.get('since'))}부터 {r['reason']}.",
+               "  저점이 높아지는 구간이라 박스 하단까지 안 내려올 수 있습니다."]
+        ref = pullback_reference(self._last_daily, self.cfg.levels, now) if self._last_daily is not None else None
+        held = self.gs.state is G.State.IN_POSITION
+        if ref is not None and not held and not (self.gs.levels and self.gs.levels.regime == "pullback"):
+            ps = " / ".join(H.won(p, q) for p in ref.prices[:3])
+            out.append(f"  참고 눌림 가격(주문 아님, 최근 고점 {H.won(ref.anchor_high, q)} 기준): {ps}")
+        return out
 
     def dca_text(self, daily: pd.DataFrame, price: float) -> str:
         """적립 추가 매수 지표 섹션."""

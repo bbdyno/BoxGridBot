@@ -25,6 +25,8 @@ class Levels:
     sma: float = 0.0
     close: float = 0.0
     mode: str = "dynamic"
+    regime: str = "box"           # "box"(박스 하단 매수) | "pullback"(고점 기준 눌림 매수)
+    anchor_high: float = 0.0
     computed_at: str = ""
     candle_ts: str = ""
 
@@ -32,7 +34,8 @@ class Levels:
         return {
             "prices": list(self.prices), "weights_pct": list(self.weights_pct), "sl": self.sl, "tp": self.tp,
             "box_low": self.box_low, "box_high": self.box_high, "atr": self.atr, "sma": self.sma,
-            "close": self.close, "mode": self.mode, "computed_at": self.computed_at, "candle_ts": self.candle_ts,
+            "close": self.close, "mode": self.mode, "regime": self.regime, "anchor_high": self.anchor_high,
+            "computed_at": self.computed_at, "candle_ts": self.candle_ts,
         }
 
     @classmethod
@@ -92,6 +95,12 @@ def compute_levels(daily: pd.DataFrame, cfg: LevelConfig, now: datetime) -> Leve
         _validate(lv)
         return lv
 
+    if cfg.mode == "adaptive":
+        from .regime import detect_regime
+
+        if detect_regime(daily, cfg).name == "expansion":
+            return _pullback_levels(daily, cfg, now, close, sma_val, ts)
+
     need = max(cfg.box_lookback, cfg.atr_len + 1)
     if daily is None or len(daily) < need:
         raise ValueError(f"레벨 계산에 일봉 {need}개가 필요합니다 (현재 {0 if daily is None else len(daily)}개).")
@@ -106,10 +115,38 @@ def compute_levels(daily: pd.DataFrame, cfg: LevelConfig, now: datetime) -> Leve
         prices=prices, weights_pct=list(cfg.weights_pct),
         sl=box_low - cfg.sl_atr * atr_val, tp=box_high + cfg.tp_atr * atr_val,
         box_low=box_low, box_high=box_high, atr=atr_val, sma=sma_val, close=close,
-        mode="dynamic", computed_at=now.isoformat(), candle_ts=ts,
+        mode=cfg.mode, regime="box", computed_at=now.isoformat(), candle_ts=ts,
     )
     _validate(lv)
     return lv
+
+
+def _pullback_levels(daily: pd.DataFrame, cfg: LevelConfig, now: datetime, close: float, sma_val: float, ts: str) -> Levels:
+    """발산 장세: 최근 고점에서 ATR 배수만큼 눌린 자리에 분할 매수. 손절은 최근 스윙 저점 아래(일봉 종가)."""
+    atr_val = float(ind.atr(daily, cfg.atr_len).iloc[-1])
+    if not atr_val or atr_val != atr_val:
+        raise ValueError("ATR 을 계산할 수 없습니다.")
+    anchor = float(daily["high"].tail(cfg.pullback_high_lookback).max())
+    prices = [anchor - k * atr_val for k in cfg.pullback_offsets_atr]
+    swing_low = float(daily["low"].tail(cfg.pullback_swing_lookback).min())
+    sl = min(swing_low - cfg.pullback_sl_atr * atr_val, prices[-1] - 1.0 * atr_val)
+    box = daily.tail(cfg.box_lookback)
+    lv = Levels(
+        prices=prices, weights_pct=list(cfg.weights_pct), sl=sl, tp=anchor + cfg.pullback_tp_atr * atr_val,
+        box_low=float(box["low"].min()), box_high=float(box["high"].max()), atr=atr_val, sma=sma_val, close=close,
+        mode="adaptive", regime="pullback", anchor_high=anchor, computed_at=now.isoformat(), candle_ts=ts,
+    )
+    _validate(lv)
+    return lv
+
+
+def pullback_reference(daily: pd.DataFrame, cfg: LevelConfig, now: datetime) -> Levels | None:
+    """발산 장세에서 참고로 보여줄 '고점 기준 눌림 가격'. 계산 불가면 None."""
+    try:
+        close = float(daily["close"].iloc[-1])
+        return _pullback_levels(daily, cfg, now, close, 0.0, daily.index[-1].isoformat())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _validate(lv: Levels) -> None:

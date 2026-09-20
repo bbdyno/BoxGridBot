@@ -18,7 +18,8 @@ db_path: data/boxgrid.db
 log_path: logs/boxgrid.log
 
 levels:
-  mode: dynamic        # dynamic(박스·ATR) | fixed(/set 또는 아래 fixed 값)
+  mode: dynamic        # dynamic(박스 하단, 기본) | adaptive(발산 장세엔 고점 눌림으로 전환, 실험용) | fixed(/set)
+                       # adaptive 는 2년 백테스트에서 dynamic 보다 수익 낮고 낙폭 컸음(+4.8%/MDD 13.7% vs +15.3%/9.4%) → 기본 꺼 둠
   box_lookback: 20
   atr_len: 14
   sma_len: 200
@@ -30,6 +31,13 @@ levels:
   trail_pct: 3.0
   disaster_pct: 3.0    # SL 보다 3% 더 빠지면 장중 즉시 청산
   rearm_threshold_pct: 0.5
+  # 장세 판별(일봉 볼린저 수렴→발산)은 항상 09:00 메시지에 참고 정보로 표시된다.
+  # 아래 값은 그 '참고 눌림 가격' 계산과 adaptive 모드 주문에 쓰인다.
+  pullback_high_lookback: 10
+  pullback_offsets_atr: [0.5, 1.0, 1.5, 2.0]   # 고점 - k*ATR
+  pullback_swing_lookback: 15                  # 손절 = 최근 스윙 저점 - 0.5 ATR (일봉 종가)
+  pullback_sl_atr: 0.5
+  pullback_tp_atr: 1.0                         # 익절선 = 기준 고점 + 1 ATR
   fixed: {}            # 예: {p1: 79000000, p2: 77500000, p3: 76500000, p4: 75700000, sl: 73600000, tp: 82500000}
 
 dca:                   # 매일 자동 적립에 얹을 '추가 매수' 지표 (09:00 판단 메시지에 포함, /dca 로 수시 조회)

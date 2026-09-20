@@ -13,3 +13,6 @@ data/telegram_state.json
 dist/*.zip
 logs/
 .DS_Store
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal

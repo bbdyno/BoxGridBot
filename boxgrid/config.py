@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 class LevelConfig:
     """그리드 레벨 계산 설정."""
 
-    mode: str = "dynamic"                  # dynamic | fixed
+    mode: str = "dynamic"                  # dynamic(박스 하단, 기본) | adaptive(발산 장세엔 고점 눌림, 실험용) | fixed
     box_lookback: int = 20                 # 일봉 박스 구간(일)
     atr_len: int = 14
     sma_len: int = 200
@@ -31,10 +31,25 @@ class LevelConfig:
     rearm_threshold_pct: float = 0.5       # 미체결 상태에서 레벨이 이만큼 바뀌면 재게시
     min_gap_pct: float = 0.3               # 현재가보다 높은 레벨은 현재가 - 이 비율 아래로 내려 게시
     fixed: dict[str, float] = field(default_factory=dict)  # p1..p4, sl, tp
+    # --- 장세 판별(일봉 볼린저) ---
+    bb_len: int = 20
+    bb_k: float = 2.0
+    squeeze_window: int = 120              # 밴드폭 분위수를 보는 구간(일)
+    squeeze_quantile: float = 0.25         # 이 분위수 이하면 '수렴'
+    squeeze_recent_days: int = 10          # 최근 며칠 안에 수렴이 있었어야 발산으로 인정
+    expansion_max_days: int = 60           # 발산 유지 최대 일수
+    # --- 발산 장세용 눌림 레벨 ---
+    pullback_high_lookback: int = 10       # 기준 고점 구간(일)
+    pullback_offsets_atr: list[float] = field(default_factory=lambda: [0.5, 1.0, 1.5, 2.0])  # 고점 - k*ATR
+    pullback_swing_lookback: int = 15      # 손절 기준 스윙 저점 구간(일)
+    pullback_sl_atr: float = 0.5           # SL = 스윙 저점 - k*ATR
+    pullback_tp_atr: float = 1.0           # TP = 기준 고점 + k*ATR
 
     def __post_init__(self) -> None:
         if len(self.offsets_atr) != len(self.weights_pct):
             raise ValueError("offsets_atr 와 weights_pct 길이가 다릅니다.")
+        if len(self.pullback_offsets_atr) != len(self.weights_pct):
+            raise ValueError("pullback_offsets_atr 와 weights_pct 길이가 다릅니다.")
         total = sum(self.weights_pct)
         if abs(total - 100.0) > 1e-6:
             raise ValueError(f"weights_pct 합이 100 이어야 합니다 (현재 {total}).")
@@ -111,8 +126,8 @@ def from_dict(raw: dict[str, Any]) -> AppConfig:
         raise ValueError(f"mode 는 paper|live 여야 합니다: {cfg.mode}")
     if cfg.op_mode not in ("signal", "confirm", "auto"):
         raise ValueError(f"op_mode 는 signal|confirm|auto 여야 합니다: {cfg.op_mode}")
-    if cfg.levels.mode not in ("dynamic", "fixed"):
-        raise ValueError(f"levels.mode 는 dynamic|fixed 여야 합니다: {cfg.levels.mode}")
+    if cfg.levels.mode not in ("adaptive", "dynamic", "fixed"):
+        raise ValueError(f"levels.mode 는 adaptive|dynamic|fixed 여야 합니다: {cfg.levels.mode}")
     return cfg
 
 

@@ -35,7 +35,14 @@ cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS 채우기
 .venv/bin/python scripts/backtest.py --days 730        # 백테스트(1h 캐시는 data/ohlcv/)
 ```
 
-상시 가동(macOS): `deploy/com.boxgrid.bot.plist` 를 `~/Library/LaunchAgents/` 에 복사 후 `launchctl load`.
+상시 가동(macOS): `scripts/install_launchagent.sh` (제거는 `remove` 인자). 다른 맥으로 옮길 때는 `MIGRATION.md`.
+
+## 장세 표시 (수렴/발산)
+
+일봉 볼린저 밴드(20, 2)로 박스(수렴)와 발산(상승 확장)을 구분해 09:00 메시지와 `/trend` 에 보여준다.
+발산 장세에서는 저점이 높아져 박스 하단까지 안 내려올 수 있으므로, 최근 고점 기준 **참고 눌림 가격**을 함께 표시한다(주문 아님).
+발산 장세에 실제로 그 가격에 주문하는 `levels.mode: adaptive` 도 있지만, 2년 백테스트에서 박스 방식보다 나빠(+4.8%/MDD 13.7% vs +15.3%/9.4%) 기본은 꺼져 있다.
+근거와 기각 사유는 `docs/VIDEO_NOTES.md`.
 
 ## 적립 추가 매수 지표 (/dca)
 
@@ -63,6 +70,7 @@ cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS 채우기
 boxgrid/
   strategy/levels.py   레벨 계산(순수 함수)
   strategy/grid.py     상태 머신(순수 로직, Decision 목록 반환)
+  strategy/regime.py   장세 판별(일봉 볼린저 수렴/발산)
   strategy/dca.py      적립 추가 매수 지표(200일 평균 할인폭)
   notify/humanize.py   사람이 읽는 알림 문장·금액 표기
   core/engine.py       결정 실행·스케줄·영속화·재시작 대조

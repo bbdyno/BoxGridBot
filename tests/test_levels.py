@@ -15,7 +15,7 @@ def test_trend_filter_uses_sma200():
 
 def test_dynamic_levels_follow_box_and_atr():
     daily = make_daily()
-    cfg = LevelConfig()
+    cfg = LevelConfig(mode="dynamic")
     lv = compute_levels(daily, cfg, after_close(daily))
     assert lv.box_low == 100_000.0 and lv.box_high == 110_000.0
     assert lv.prices[0] > lv.prices[1] > lv.prices[2] > lv.prices[3]
