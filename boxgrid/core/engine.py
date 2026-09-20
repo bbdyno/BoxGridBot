@@ -515,7 +515,8 @@ class GridEngine:
                 await self.execute(decisions, now)
             finally:
                 self._in_daily = False
-            await self.emit(EventKind.DAILY_CHECK, f"📊 오늘의 판단 ({now.astimezone(KST):%-m/%-d %H:%M} 일봉 마감 기준)",
+            closed_at = (daily.index[-1] + pd.Timedelta(days=1)).to_pydatetime().astimezone(KST)
+            await self.emit(EventKind.DAILY_CHECK, f"📊 오늘의 판단 ({closed_at:%-m/%-d %H:%M} 마감 일봉 기준)",
                             self._daily_summary(state_before, now),
                             data={"state": self.gs.state.value, **self.gs.trend})
 
